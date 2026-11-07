@@ -19,7 +19,8 @@
     "dev": "scripts/dev",
     "release": "scripts/release",
     "deploy": "scripts/deploy",
-    "prepublishOnly": "scripts/prepublish"
+    "prepublishOnly": "scripts/prepublish",
+    "tool": "node scripts/tool.js"
   },
   "dependencies": {
     "bowser": "1.9.4",
