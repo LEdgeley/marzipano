@@ -93,14 +93,25 @@
       var gpu = stage.type === 'webgpu';
       var hdrDisplay = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches);
       var ev = Math.round(Math.log2(hdrController.exposure() || 1) * 10) / 10 || 0;
-      debugElement.textContent = (gpu ? 'WebGPU' : 'WebGL') + ' · ' +
-        (hdrController.hdrOutput() ? 'HDR output (extended range)' :
-          'SDR tone-mapped · exposure ' + (ev >= 0 ? '+' : '') + ev.toFixed(1) + ' EV') +
+      // scenes is set further down; until then nothing is showing.
+      var current = (scenes || []).find(function(s) { return s.scene === viewer.scene(); });
+      var mode;
+      if (current && !current.data.hdr) {
+        // SDR scenes are drawn as they are, with no tone mapping or exposure.
+        mode = 'SDR scene (shown as is)' +
+          (hdrController.hdrOutput() ? ' · HDR output (extended range)' : '');
+      } else if (hdrController.hdrOutput()) {
+        mode = 'HDR scene · HDR output (extended range)';
+      } else {
+        mode = 'HDR scene · SDR tone-mapped · exposure ' + (ev >= 0 ? '+' : '') + ev.toFixed(1) + ' EV';
+      }
+      debugElement.textContent = (gpu ? 'WebGPU' : 'WebGL') + ' · ' + mode +
         ' · display ' + (hdrDisplay ? 'reports HDR' : 'reports SDR') +
         (navigator.gpu ? '' : ' · no WebGPU');
     };
     hdrController.addEventListener('exposureChange', updateDebug);
     viewer.stage().addEventListener('hdrChange', updateDebug);
+    viewer.addEventListener('sceneChange', updateDebug);
     setInterval(updateDebug, 1000);
     updateDebug();
   }

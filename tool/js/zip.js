@@ -103,6 +103,71 @@
     return new Blob(this._parts.concat(this._central, [end.buffer]), { type: 'application/zip' });
   };
 
+  // Minimal ZIP reader: lists entries from the central directory and reads one
+  // entry (stored or deflated). Works on a File by slicing, so a large tour
+  // archive is never read whole.
+  function ZipReader(blob) {
+    this._blob = blob;
+  }
+
+  ZipReader.prototype._bytes = async function(start, end) {
+    return new Uint8Array(await this._blob.slice(start, end).arrayBuffer());
+  };
+
+  ZipReader.prototype.entries = async function() {
+    var size = this._blob.size;
+    var tailStart = Math.max(0, size - 22 - 0xFFFF);
+    var tail = await this._bytes(tailStart, size);
+    var dv = new DataView(tail.buffer);
+    var eocd = -1;
+    for (var i = tail.length - 22; i >= 0; i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) { throw new Error('Not a ZIP file'); }
+    var count = dv.getUint16(eocd + 10, true);
+    var cdSize = dv.getUint32(eocd + 12, true);
+    var cdOffset = dv.getUint32(eocd + 16, true);
+    if (cdOffset === 0xFFFFFFFF || count === 0xFFFF) {
+      throw new Error('ZIP64 archives are not supported; open data.js instead');
+    }
+    var cd = await this._bytes(cdOffset, cdOffset + cdSize);
+    var cv = new DataView(cd.buffer);
+    var decoder = new TextDecoder();
+    var list = [];
+    var p = 0;
+    for (var n = 0; n < count && p + 46 <= cd.length; n++) {
+      if (cv.getUint32(p, true) !== 0x02014b50) { break; }
+      var nameLen = cv.getUint16(p + 28, true);
+      var extraLen = cv.getUint16(p + 30, true);
+      var commentLen = cv.getUint16(p + 32, true);
+      list.push({
+        name: decoder.decode(cd.subarray(p + 46, p + 46 + nameLen)),
+        method: cv.getUint16(p + 10, true),
+        compressedSize: cv.getUint32(p + 20, true),
+        size: cv.getUint32(p + 24, true),
+        offset: cv.getUint32(p + 42, true)
+      });
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return list;
+  };
+
+  // Returns the entry's contents as a Uint8Array.
+  ZipReader.prototype.read = async function(entry) {
+    var head = await this._bytes(entry.offset, entry.offset + 30);
+    var hv = new DataView(head.buffer);
+    if (hv.getUint32(0, true) !== 0x04034b50) { throw new Error('Corrupt ZIP entry: ' + entry.name); }
+    var start = entry.offset + 30 + hv.getUint16(26, true) + hv.getUint16(28, true);
+    var data = this._blob.slice(start, start + entry.compressedSize);
+    if (entry.method === 0) { return new Uint8Array(await data.arrayBuffer()); }
+    if (entry.method === 8) {
+      var stream = data.stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+    throw new Error('Unsupported ZIP compression method ' + entry.method);
+  };
+
   global.ZipWriter = ZipWriter;
+  global.ZipReader = ZipReader;
 
 })(window);
