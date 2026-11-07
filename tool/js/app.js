@@ -71,11 +71,44 @@
 
   // ---- Viewer --------------------------------------------------------------
 
-  var viewer = new Marzipano.Viewer($('#pano'), {
+  // The viewer is created asynchronously: on HDR displays with WebGPU it uses
+  // a WebGPU stage for native HDR output. ?stage=webgl|webgpu forces a stage.
+  var viewer = null;
+  var hdrController = null;
+  var stageParam = (location.search.match(/[?&]stage=(webgl|webgpu)/) || [])[1] || 'auto';
+  Marzipano.HdrController.createViewer($('#pano'), {
     controls: { mouseViewMode: settings.mouseViewMode }
+  }, { stage: stageParam }).then(function(v) {
+    viewer = v;
+    hdrController = new Marzipano.HdrController(viewer);
+    hdrController.addEventListener('exposureChange', updateHdrStatus);
+    hdrController.addEventListener('error', function(err) { toast(String(err && err.message || err), true); });
+    viewer.stage().addEventListener('hdrChange', updateHdrStatus);
+    applyMouseViewMode();
+    if (selected) { showScene(selected); }
+  }, function(err) {
+    toast('Could not start the viewer: ' + err.message, true);
   });
 
+  function updateHdrStatus() {
+    var el = $('#hdrStatus');
+    if (!selected || !selected.hdr || !viewer) {
+      el.textContent = '';
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    var stage = viewer.stage().type === 'webgpu' ? 'WebGPU' : 'WebGL';
+    if (hdrController.hdrOutput()) {
+      el.textContent = 'HDR output · ' + stage;
+    } else {
+      var ev = Math.log2(hdrController.exposure() || 1);
+      el.textContent = 'SDR · auto exposure ' + (ev >= 0 ? '+' : '') + ev.toFixed(1) + ' EV · ' + stage;
+    }
+  }
+
   function applyMouseViewMode() {
+    if (!viewer) { return; }
     var controls = viewer.controls();
     if (settings.mouseViewMode === 'qtvr') {
       controls.disableMethod('mouseViewDrag');
@@ -105,12 +138,15 @@
         scene.objectUrls.push(url);
       }
       return { url: url };
-    });
+    }, { ultraHdr: !!scene.hdr });
     var geometry = new Marzipano.CubeGeometry(scene.allLevels());
     var limiter = Marzipano.RectilinearView.limit.traditional(scene.dataFaceSize(), 100 * Math.PI / 180, 120 * Math.PI / 180);
     var view = new Marzipano.RectilinearView(scene.initialViewParameters, limiter);
     var mzScene = viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true });
     scene.mz = { scene: mzScene, view: view, hotspots: [] };
+    if (scene.hdr) {
+      hdrController.attach(mzScene, scene.hdr, previewUrl);
+    }
     return scene.mz;
   }
 
@@ -124,6 +160,10 @@
       $('#empty').style.display = scene ? 'none' : '';
       return;
     }
+    if (!viewer) {
+      status.textContent = 'Starting viewer…';
+      return;
+    }
     status.textContent = '';
     $('#empty').style.display = '';
     document.body.classList.add('has-scene');
@@ -131,6 +171,7 @@
     mz.view.setParameters(scene.initialViewParameters);
     mz.scene.switchTo({ transitionDuration: 300 });
     renderHotspots(scene);
+    updateHdrStatus();
   }
 
   // ---- Hotspot editing -----------------------------------------------------
@@ -334,6 +375,12 @@
       name.addEventListener('input', function() { scene.name = name.value || 'untitled'; });
       name.addEventListener('click', function(e) { e.stopPropagation(); });
       li.querySelector('.info').textContent = scene.kind === 'cube' ? 'cube faces' : (scene.width ? scene.width + '×' + scene.height : 'equirectangular');
+      if (scene.hdr || /.(exr|hdr)$/i.test(scene.fileName)) {
+        var badge = document.createElement('span');
+        badge.className = 'hdr-badge';
+        badge.textContent = 'HDR';
+        li.querySelector('.info').appendChild(badge);
+      }
       li.querySelector('.state').textContent = stateText(scene);
       li.querySelector('.bar > div').style.width = Math.round(scene.progress * 100) + '%';
       li.querySelector('.up').disabled = i === 0;
@@ -376,7 +423,10 @@
   function removeScene(scene) {
     if (!confirm('Remove "' + scene.name + '"?')) { return; }
     if (scene.worker) { scene.worker.terminate(); }
-    if (scene.mz) { viewer.destroyScene(scene.mz.scene); }
+    if (scene.mz) {
+      if (hdrController) { hdrController.detach(scene.mz.scene); }
+      viewer.destroyScene(scene.mz.scene);
+    }
     scene.objectUrls.forEach(function(u) { URL.revokeObjectURL(u); });
     scenes.splice(scenes.indexOf(scene), 1);
     scenes.forEach(function(s) {
@@ -427,7 +477,7 @@
 
   function addFiles(fileList) {
     var files = Array.prototype.filter.call(fileList, function(f) {
-      return /^image\//.test(f.type) || /\.(jpe?g|png|webp|avif|bmp|gif|tiff?)$/i.test(f.name);
+      return /^image\//.test(f.type) || /\.(jpe?g|png|webp|avif|bmp|gif|tiff?|exr|hdr)$/i.test(f.name);
     });
     var skipped = fileList.length - files.length;
     var groups = {};
@@ -487,6 +537,8 @@
         scene.height = m.height;
         var info = scene.listItem && scene.listItem.querySelector('.info');
         if (info && scene.kind !== 'cube') { info.textContent = m.width + '×' + m.height; }
+      } else if (m.type === 'hdr') {
+        scene.hdr = m.hdr;
       } else if (m.type === 'levels') {
         scene.levels = m.levels;
         scene.faceSize = m.faceSize;
@@ -693,6 +745,7 @@
           name: s.name,
           levels: s.allLevels(),
           faceSize: s.dataFaceSize(),
+          hdr: s.hdr || undefined,
           initialViewParameters: s.initialViewParameters,
           linkHotspots: s.linkHotspots.filter(function(h) {
             var t = findScene(h.target);
@@ -898,7 +951,13 @@
   });
 
   // Exposed for debugging and automated checks.
-  window.marzipanoTool = { scenes: function() { return scenes; }, tourData: tourData, addFiles: addFiles };
+  window.marzipanoTool = {
+    scenes: function() { return scenes; },
+    tourData: tourData,
+    addFiles: addFiles,
+    viewer: function() { return viewer; },
+    hdrController: function() { return hdrController; }
+  };
 
   renderSceneList();
 })();

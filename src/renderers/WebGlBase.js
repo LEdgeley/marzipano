@@ -28,6 +28,7 @@ var enableAttributes = WebGlCommon.enableAttributes;
 var disableAttributes = WebGlCommon.disableAttributes;
 var setViewport = WebGlCommon.setViewport;
 var setupPixelEffectUniforms = WebGlCommon.setupPixelEffectUniforms;
+var setupHdrUniforms = WebGlCommon.setupHdrUniforms;
 
 var setDepth = WebGlCommon.setDepth;
 var setTexture = WebGlCommon.setTexture;
@@ -42,7 +43,8 @@ var textureCoords = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
 var attribList = ['aVertexPosition', 'aTextureCoord'];
 var uniformList = [
   'uDepth', 'uOpacity', 'uSampler', 'uProjMatrix', 'uViewportMatrix',
-  'uColorOffset', 'uColorMatrix'
+  'uColorOffset', 'uColorMatrix',
+  'uGainSampler', 'uHdr', 'uGainParams', 'uHdrParams', 'uHdrOutput'
 ];
 
 
@@ -65,6 +67,9 @@ function WebGlBaseRenderer(gl) {
   this.constantBuffers = createConstantBuffers(gl, vertexIndices, vertexPositions, textureCoords);
 
   this.shaderProgram = createShaderProgram(gl, vertexSrc, fragmentSrc, attribList, uniformList);
+
+  // Whether the current layer renders HDR tiles (set in startLayer).
+  this._layerHdr = false;
 }
 
 WebGlBaseRenderer.prototype.destroy = function() {
@@ -96,6 +101,8 @@ WebGlBaseRenderer.prototype.startLayer = function(layer, rect) {
     colorOffset: shaderProgram.uColorOffset,
     colorMatrix: shaderProgram.uColorMatrix
   });
+
+  this._layerHdr = setupHdrUniforms(gl, layer.effects(), shaderProgram);
 };
 
 
@@ -133,6 +140,9 @@ WebGlBaseRenderer.prototype.renderTile = function(tile, texture, layer, layerZ) 
   setDepth(gl, shaderProgram, layerZ, tile.z);
 
   setTexture(gl, shaderProgram, texture);
+
+  // Reconstruct HDR only for tiles that have a gain map.
+  gl.uniform1f(shaderProgram.uHdr, this._layerHdr && texture._gainTexture ? 1.0 : 0.0);
 
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, constantBuffers.vertexIndices);
   gl.drawElements(gl.TRIANGLES, vertexIndices.length, gl.UNSIGNED_SHORT, 0);

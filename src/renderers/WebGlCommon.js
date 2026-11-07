@@ -126,6 +126,13 @@ function setTexture(gl, shaderProgram, texture) {
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture._texture);
   gl.uniform1i(shaderProgram.uSampler, 0);
+  if (shaderProgram.uGainSampler) {
+    // Bind the gain map (or the base again, as a harmless placeholder).
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texture._gainTexture || texture._texture);
+    gl.uniform1i(shaderProgram.uGainSampler, 1);
+    gl.activeTexture(gl.TEXTURE0);
+  }
 }
 
 
@@ -160,6 +167,50 @@ function setupPixelEffectUniforms(gl, effects, uniforms) {
   gl.uniformMatrix4fv(uniforms.colorMatrix, false, colorMatrix);
 }
 
+
+/**
+ * Resolves the layer's `hdr` effect into shader parameters.
+ *
+ * effects.hdr = {
+ *   gainMapMin, gainMapMax, gamma, offsetSdr, offsetHdr  // hdrgm metadata
+ *   exposure:   linear multiplier applied to the reconstructed HDR (default 1)
+ *   weight:     0..1 share of the gain map to apply (default 1 = full HDR)
+ *   headroom:   display peak / SDR white, for HDR output (default 4)
+ *   output:     'sdr' (tone-map, default) or 'hdr' (extended range output)
+ * }
+ *
+ * Returns null when the layer has no hdr effect.
+ */
+function hdrParams(effects) {
+  var hdr = effects && effects.hdr;
+  if (!hdr) {
+    return null;
+  }
+  var gamma = hdr.gamma || 1;
+  return {
+    gain: [hdr.gainMapMin || 0, hdr.gainMapMax || 0, 1 / gamma, hdr.weight != null ? hdr.weight : 1],
+    params: [
+      hdr.offsetSdr != null ? hdr.offsetSdr : 1 / 64,
+      hdr.offsetHdr != null ? hdr.offsetHdr : 1 / 64,
+      hdr.exposure != null ? hdr.exposure : 1,
+      hdr.headroom || 4
+    ],
+    output: hdr.output === 'hdr' ? 1 : 0
+  };
+}
+
+// Sets the HDR uniforms; returns whether the layer renders in HDR.
+function setupHdrUniforms(gl, effects, shaderProgram) {
+  var p = hdrParams(effects);
+  if (!p) {
+    gl.uniform1f(shaderProgram.uHdr, 0);
+    return false;
+  }
+  gl.uniform4fv(shaderProgram.uGainParams, p.gain);
+  gl.uniform4fv(shaderProgram.uHdrParams, p.params);
+  gl.uniform1f(shaderProgram.uHdrOutput, p.output);
+  return true;
+}
 
 // Temporary vectors for setViewport.
 var translateVector = vec3.create();
@@ -228,5 +279,7 @@ module.exports = {
   setTexture: setTexture,
   setDepth: setDepth,
   setViewport: setViewport,
-  setupPixelEffectUniforms: setupPixelEffectUniforms
+  setupPixelEffectUniforms: setupPixelEffectUniforms,
+  setupHdrUniforms: setupHdrUniforms,
+  hdrParams: hdrParams
 };

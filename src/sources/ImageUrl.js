@@ -58,6 +58,9 @@ var defaultRetryDelay = 10000;
  *     the same time. The limit is per {@link ImageSourceUrl} instance.
  * @param {number} [opts.retryDelay=10000] Time in milliseconds to wait before
  *     retrying a failed request.
+ * @param {boolean} [opts.ultraHdr=false] Tiles are Ultra HDR JPEGs (an SDR
+ *     image with an embedded gain map). They load as {@link HdrAsset}s and
+ *     are rendered in HDR when the layer has an `hdr` effect.
  */
 function ImageUrlSource(sourceFromTile, opts) {
 
@@ -69,6 +72,9 @@ function ImageUrlSource(sourceFromTile, opts) {
 
   this._retryDelay = opts.retryDelay || defaultRetryDelay;
   this._retryMap = {};
+
+  // Load tiles as Ultra HDR (SDR JPEG + gain map) through the stage.
+  this._ultraHdr = !!opts.ultraHdr;
 
   this._sourceFromTile = sourceFromTile;
 }
@@ -87,7 +93,9 @@ ImageUrlSource.prototype.loadAsset = function(stage, tile, done) {
   var url = tileSource.url;
   var rect = tileSource.rect;
 
-  var loadImage = stage.loadImage.bind(stage, url, rect);
+  var loadImage = this._ultraHdr && stage.loadUltraHdrImage ?
+    stage.loadUltraHdrImage.bind(stage, url, rect) :
+    stage.loadImage.bind(stage, url, rect);
 
   var loadFn = function(done) {
     // TODO: Deduplicate load requests for the same URL. Although the browser

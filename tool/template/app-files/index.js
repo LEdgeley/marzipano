@@ -60,15 +60,58 @@
     }
   };
 
-  // Initialize viewer.
-  var viewer = new Marzipano.Viewer(panoElement, viewerOpts);
+  // Initialize viewer. Tours with HDR scenes use Marzipano.HdrController,
+  // which picks a WebGPU stage (native HDR output) on HDR displays and the
+  // WebGL stage (tone-mapped, auto exposure) elsewhere.
+  var hasHdr = data.scenes.some(function(s) { return !!s.hdr; });
+  // ?stage=webgl or ?stage=webgpu forces a stage (for testing).
+  var stageParam = (location.search.match(/[?&]stage=(webgl|webgpu)/) || [])[1] || 'auto';
+  var viewerReady = hasHdr ?
+    Marzipano.HdrController.createViewer(panoElement, viewerOpts, { stage: stageParam }) :
+    Promise.resolve(new Marzipano.Viewer(panoElement, viewerOpts));
+
+  viewerReady.then(start, function(err) {
+    console.error(err);
+  });
+
+  function start(viewer) {
+
+  var hdrController = hasHdr ? new Marzipano.HdrController(viewer) : null;
+  if (hdrController) {
+    hdrController.addEventListener('error', function(err) { console.warn(err); });
+  }
+
+  // ?debug shows how HDR scenes are being rendered.
+  if (hdrController && /[?&]debug\b/.test(location.search)) {
+    var debugElement = document.createElement('div');
+    debugElement.style.cssText = 'position:absolute;left:8px;bottom:8px;z-index:10;' +
+      'padding:4px 8px;border-radius:4px;background:rgba(0,0,0,.7);color:#fff;' +
+      'font:12px/1.4 sans-serif;pointer-events:none';
+    document.body.appendChild(debugElement);
+    var updateDebug = function() {
+      var stage = viewer.stage();
+      var gpu = stage.type === 'webgpu';
+      var hdrDisplay = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches);
+      var ev = Math.round(Math.log2(hdrController.exposure() || 1) * 10) / 10 || 0;
+      debugElement.textContent = (gpu ? 'WebGPU' : 'WebGL') + ' · ' +
+        (hdrController.hdrOutput() ? 'HDR output (extended range)' :
+          'SDR tone-mapped · exposure ' + (ev >= 0 ? '+' : '') + ev.toFixed(1) + ' EV') +
+        ' · display ' + (hdrDisplay ? 'reports HDR' : 'reports SDR') +
+        (navigator.gpu ? '' : ' · no WebGPU');
+    };
+    hdrController.addEventListener('exposureChange', updateDebug);
+    viewer.stage().addEventListener('hdrChange', updateDebug);
+    setInterval(updateDebug, 1000);
+    updateDebug();
+  }
 
   // Create scenes.
   var scenes = data.scenes.map(function(data) {
     var urlPrefix = "tiles";
+    var previewUrl = urlPrefix + "/" + data.id + "/preview.jpg";
     var source = Marzipano.ImageUrlSource.fromString(
       urlPrefix + "/" + data.id + "/{z}/{f}/{y}/{x}.jpg",
-      { cubeMapPreviewUrl: urlPrefix + "/" + data.id + "/preview.jpg" });
+      { cubeMapPreviewUrl: previewUrl, ultraHdr: !!data.hdr });
     var geometry = new Marzipano.CubeGeometry(data.levels);
 
     var limiter = Marzipano.RectilinearView.limit.traditional(data.faceSize, 100*Math.PI/180, 120*Math.PI/180);
@@ -80,6 +123,11 @@
       view: view,
       pinFirstLevel: true
     });
+
+    // HDR scenes: drive exposure and HDR output.
+    if (data.hdr && hdrController) {
+      hdrController.attach(scene, data.hdr, previewUrl);
+    }
 
     // Create link hotspots.
     data.linkHotspots.forEach(function(hotspot) {
@@ -397,5 +445,7 @@
 
   // Display the initial scene.
   switchScene(scenes[0]);
+
+  } // start
 
 })();
