@@ -47,6 +47,14 @@ section > label { display: block; margin: 6px 0; }
 .row > label { margin: 0; }
 label.inline input { width: 64px; margin-left: 6px; }
 
+#pendingScenes ul { list-style: none; margin: 0; padding: 0; }
+#pendingScenes li {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 0; border-top: 1px solid var(--border);
+}
+#pendingScenes .label { min-width: 0; overflow-wrap: anywhere; }
+#pendingScenes li button { padding: 3px 8px; font-size: 12px; flex: none; }
+
 input[type=text], input[type=number], textarea, select {
   background: var(--panel-2);
   color: var(--text);

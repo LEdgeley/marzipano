@@ -429,6 +429,7 @@
     }
     scene.objectUrls.forEach(function(u) { URL.revokeObjectURL(u); });
     scenes.splice(scenes.indexOf(scene), 1);
+    renderPendingScenes();
     scenes.forEach(function(s) {
       s.linkHotspots = s.linkHotspots.filter(function(h) { return h.target !== scene.uid; });
     });
@@ -475,7 +476,8 @@
 
   function baseName(name) { return name.replace(/\.[^.]+$/, ''); }
 
-  function addFiles(fileList) {
+  // bindKey: the project scene the files were picked for by hand.
+  function addFiles(fileList, bindKey) {
     var files = Array.prototype.filter.call(fileList, function(f) {
       return /^image\//.test(f.type) || /\.(jpe?g|png|webp|avif|bmp|gif|tiff?|exr|hdr)$/i.test(f.name);
     });
@@ -492,6 +494,10 @@
       }
     });
     var added = [];
+    if (bindKey && singles.length + Object.keys(groups).length !== 1) {
+      toast('Choose one panorama, or the six faces of one cube', true);
+      return;
+    }
     Object.keys(groups).forEach(function(key) {
       var g = groups[key];
       if (FACES.split('').every(function(face) { return g[face]; })) {
@@ -505,10 +511,11 @@
       added.push(new Scene('equirect', baseName(f.name), f.name, f));
     });
     added.forEach(function(scene) {
+      if (bindKey) { scene.bindKey = bindKey; }
       scenes.push(scene);
       applyPendingProject(scene);
     });
-    if (pendingProject) { sortByProject(); }
+    if (pendingProject) { sortByProject(); renderPendingScenes(); }
     if (skipped > 0) {
       toast(skipped + ' file(s) skipped (not images)', true);
     }
@@ -598,7 +605,13 @@
     e.preventDefault();
     dragDepth = 0;
     document.body.classList.remove('dragging');
-    if (e.dataTransfer.files.length) { addFiles(e.dataTransfer.files); }
+    var dropped = Array.prototype.slice.call(e.dataTransfer.files);
+    var projectFiles = dropped.filter(isProjectFile);
+    var images = dropped.filter(function(f) { return !isProjectFile(f); });
+    // Load a dropped project or tour first, so the images match against it.
+    (projectFiles.length ? loadProjectFile(projectFiles[0]) : Promise.resolve()).then(function() {
+      if (images.length) { addFiles(images); }
+    });
   });
 
   // ---- Settings ------------------------------------------------------------
@@ -668,33 +681,145 @@
   $('#projectInput').addEventListener('change', function(e) {
     var file = e.target.files[0];
     e.target.value = '';
-    if (!file) { return; }
-    file.text().then(function(text) {
-      var p = JSON.parse(text);
-      if (p.format !== 'marzipano-local-tool-project') {
-        throw new Error('Not a project file');
-      }
-      pendingProject = p;
-      $('#tourName').value = p.name || 'Tour';
-      settings = Object.assign(settings, p.settings || {});
-      writeSettings();
-      scenes.forEach(applyPendingProject);
-      sortByProject();
-      // Link targets may only resolve once every scene has its data.
-      scenes.forEach(resolvePendingLinks);
-      renderSceneList();
-      if (selected) { showScene(selected); }
-      var missing = p.scenes.filter(function(ps) {
-        return !scenes.some(function(s) { return s.fileName === ps.fileName; });
-      }).map(function(ps) { return ps.fileName; });
-      toast(missing.length ? 'Project loaded. Now add: ' + missing.join(', ') : 'Project loaded');
-    }).catch(function(err) { toast('Could not load project: ' + err.message, true); });
+    if (file) { loadProjectFile(file); }
   });
 
+  function isProjectFile(f) {
+    return /\.(json|js|zip)$/i.test(f.name);
+  }
+
+  // Loads a saved project (.project.json), or rebuilds one from a tour export:
+  // its data.js, or the exported ZIP (which holds app-files/data.js).
+  function loadProjectFile(file) {
+    return readProject(file).then(function(p) {
+      applyProject(p);
+      var matched = p.scenes.filter(isClaimed).length;
+      toast('Loaded "' + (p.name || file.name) + '": ' + matched + ' of ' + p.scenes.length + ' scenes matched');
+    }).catch(function(err) { toast('Could not load project: ' + err.message, true); });
+  }
+
+  async function readProject(file) {
+    var text;
+    if (/\.zip$/i.test(file.name)) {
+      var zip = new ZipReader(file);
+      var found = (await zip.entries()).filter(function(en) { return /(^|\/)data\.js$/i.test(en.name); });
+      if (!found.length) { throw new Error('no data.js in ' + file.name); }
+      found.sort(function(a, b) { return a.name.length - b.name.length; });
+      text = new TextDecoder().decode(await zip.read(found[0]));
+      return projectFromTour(parseDataJs(text));
+    }
+    text = (await file.text()).replace(/^﻿/, '');
+    if (/^\s*\{/.test(text)) {
+      var p = JSON.parse(text);
+      if (p.format === 'marzipano-local-tool-project') { return normaliseProject(p); }
+      if (Array.isArray(p.scenes)) { return projectFromTour(p); }
+      throw new Error('not a project file or data.js');
+    }
+    return projectFromTour(parseDataJs(text));
+  }
+
+  // data.js is "var APP_DATA = {...};" with a JSON object literal, both from
+  // this tool and from the hosted Marzipano Tool. It is parsed, never run.
+  function parseDataJs(text) {
+    var start = text.indexOf('{');
+    var end = text.lastIndexOf('}');
+    if (start < 0 || end < start) { throw new Error('no APP_DATA object found'); }
+    var data;
+    try {
+      data = JSON.parse(text.slice(start, end + 1));
+    } catch (e) {
+      throw new Error('data.js is not in the expected format (' + e.message + ')');
+    }
+    if (!data || !Array.isArray(data.scenes)) { throw new Error('data.js has no scenes'); }
+    return data;
+  }
+
+  // Project scenes carry a key that link targets refer to. Saved projects key
+  // scenes by file name; tours by scene id.
+  function normaliseProject(p) {
+    return {
+      name: p.name,
+      settings: p.settings || {},
+      scenes: (p.scenes || []).map(function(s) {
+        return {
+          key: s.fileName,
+          fileName: s.fileName,
+          name: s.name,
+          initialViewParameters: s.initialViewParameters,
+          linkHotspots: s.linkHotspots || [],
+          infoHotspots: s.infoHotspots || []
+        };
+      })
+    };
+  }
+
+  function projectFromTour(data) {
+    var settingKeys = ['mouseViewMode', 'autorotateEnabled', 'fullscreenButton', 'viewControlButtons'];
+    var tourSettings = {};
+    settingKeys.forEach(function(k) {
+      if (data.settings && data.settings[k] !== undefined) { tourSettings[k] = data.settings[k]; }
+    });
+    return {
+      name: data.name,
+      settings: tourSettings,
+      scenes: data.scenes.map(function(s) {
+        return {
+          key: 'id:' + s.id,
+          fileName: s.sourceFile || null,
+          name: s.name || s.id,
+          initialViewParameters: s.initialViewParameters || { yaw: 0, pitch: 0, fov: Math.PI / 2 },
+          linkHotspots: (s.linkHotspots || []).map(function(h) {
+            return { yaw: h.yaw, pitch: h.pitch, rotation: h.rotation || 0, target: 'id:' + h.target };
+          }),
+          infoHotspots: (s.infoHotspots || []).map(function(h) {
+            return { yaw: h.yaw, pitch: h.pitch, title: h.title || '', text: h.text || '' };
+          })
+        };
+      })
+    };
+  }
+
+  function applyProject(p) {
+    pendingProject = p;
+    if (p.name) { $('#tourName').value = p.name; }
+    settings = Object.assign(settings, p.settings);
+    writeSettings();
+    scenes.forEach(function(s) { delete s.projectKey; delete s.pendingLinks; });
+    scenes.forEach(applyPendingProject);
+    sortByProject();
+    // Link targets may only resolve once every scene has its data.
+    scenes.forEach(resolvePendingLinks);
+    renderSceneList();
+    renderPendingScenes();
+    if (selected) { showScene(selected); }
+  }
+
+  function isClaimed(ps) {
+    return scenes.some(function(s) { return s.projectKey === ps.key; });
+  }
+
+  // Finds the project scene for a newly added panorama: the one it was picked
+  // for, else by exact file name, then file name ignoring case and extension,
+  // then (for tours without source names) by scene name.
   function projectSceneFor(scene) {
     if (!pendingProject) { return null; }
-    for (var i = 0; i < pendingProject.scenes.length; i++) {
-      if (pendingProject.scenes[i].fileName === scene.fileName) { return pendingProject.scenes[i]; }
+    var free = pendingProject.scenes.filter(function(ps) {
+      return !scenes.some(function(s) { return s !== scene && s.projectKey === ps.key; });
+    });
+    var lower = function(x) { return String(x).toLowerCase(); };
+    var base = lower(baseName(scene.fileName));
+    var tests = [
+      function(ps) { return ps.key === scene.bindKey; },
+      function(ps) { return ps.fileName === scene.fileName; },
+      function(ps) { return ps.fileName && lower(ps.fileName) === lower(scene.fileName); },
+      function(ps) { return ps.fileName && lower(baseName(ps.fileName)) === base; },
+      function(ps) { return !ps.fileName && lower(ps.name) === base; },
+      function(ps) { return !ps.fileName && slug(ps.name) === slug(base); }
+    ];
+    for (var t = 0; t < tests.length; t++) {
+      for (var i = 0; i < free.length; i++) {
+        if (tests[t](free[i])) { return free[i]; }
+      }
     }
     return null;
   }
@@ -702,10 +827,11 @@
   function applyPendingProject(scene) {
     var ps = projectSceneFor(scene);
     if (!ps) { return; }
+    scene.projectKey = ps.key;
     scene.name = ps.name;
     scene.initialViewParameters = Object.assign({}, ps.initialViewParameters);
     scene.infoHotspots = ps.infoHotspots.map(function(h) { return Object.assign({}, h); });
-    scene.pendingLinks = ps.linkHotspots;
+    scene.pendingLinks = ps.linkHotspots.slice();
     scene.linkHotspots = [];
     scenes.forEach(resolvePendingLinks);
   }
@@ -714,7 +840,7 @@
   function resolvePendingLinks(scene) {
     if (!scene.pendingLinks) { return; }
     scene.pendingLinks = scene.pendingLinks.filter(function(h) {
-      var target = scenes.find(function(s) { return s.fileName === h.target; });
+      var target = scenes.find(function(s) { return s.projectKey && s.projectKey === h.target; });
       if (!target) { return true; }
       scene.linkHotspots.push({ yaw: h.yaw, pitch: h.pitch, rotation: h.rotation, target: target.uid });
       return false;
@@ -723,15 +849,67 @@
   }
 
   function sortByProject() {
-    var order = pendingProject.scenes.map(function(s) { return s.fileName; });
+    var order = pendingProject.scenes.map(function(s) { return s.key; });
     var rank = function(s) {
-      var i = order.indexOf(s.fileName);
+      var i = s.projectKey ? order.indexOf(s.projectKey) : -1;
       return i < 0 ? order.length + scenes.indexOf(s) : i;
     };
     var ranked = scenes.map(function(s) { return { s: s, r: rank(s) }; });
     ranked.sort(function(a, b) { return a.r - b.r; });
     scenes = ranked.map(function(x) { return x.s; });
   }
+
+  // Project scenes that no added panorama has matched yet, each with a button
+  // to pick its file by hand (for scenes renamed before the tour was exported).
+  var pickKey = null;
+  function renderPendingScenes() {
+    var box = $('#pendingScenes');
+    var list = box.querySelector('ul');
+    list.innerHTML = '';
+    var waiting = pendingProject ? pendingProject.scenes.filter(function(ps) { return !isClaimed(ps); }) : [];
+    box.hidden = !waiting.length;
+    waiting.forEach(function(ps) {
+      var li = document.createElement('li');
+      var label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = ps.name;
+      if (ps.fileName) { label.title = ps.fileName; }
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Choose file…';
+      button.addEventListener('click', function() {
+        pickKey = ps.key;
+        $('#pickInput').click();
+      });
+      li.appendChild(label);
+      li.appendChild(button);
+      list.appendChild(li);
+    });
+  }
+
+  $('#pickInput').addEventListener('change', function(e) {
+    // Copy first: clearing the input empties its FileList.
+    var files = Array.prototype.slice.call(e.target.files);
+    e.target.value = '';
+    var key = pickKey;
+    pickKey = null;
+    if (!files.length || !key) { return; }
+    // The file may already be in the list, unmatched: assign that scene rather
+    // than processing the panorama a second time.
+    var existing = files.length === 1 && scenes.find(function(s) {
+      return !s.projectKey && s.fileName === files[0].name;
+    });
+    if (existing) {
+      existing.bindKey = key;
+      applyPendingProject(existing);
+      sortByProject();
+      renderSceneList();
+      renderPendingScenes();
+      showScene(existing);
+    } else {
+      addFiles(files, key);
+    }
+  });
 
   // ---- Export --------------------------------------------------------------
 
@@ -743,6 +921,8 @@
         return {
           id: exportId(s),
           name: s.name,
+          // Not used by the viewer: lets "Load project" match the source again.
+          sourceFile: s.fileName,
           levels: s.allLevels(),
           faceSize: s.dataFaceSize(),
           hdr: s.hdr || undefined,

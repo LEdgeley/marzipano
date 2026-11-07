@@ -53,6 +53,25 @@ existing build.
 settings. Tiles are not saved. To resume later, **Load project** and add the
 same image files again: scenes are matched by file name.
 
+**Load project** also accepts an exported tour, so you can rebuild a project
+from output: pick its `app-files/data.js`, or the exported ZIP (stored or
+deflated). This works for tours from the hosted Marzipano Tool as well. You can
+also drop the file onto the page, with or without the panoramas. The tour name,
+settings, scene order and names, initial views, and link and info hotspots all
+come back. Tiles are not reused; the panoramas are processed again.
+
+Scenes are matched to the panoramas you add in this order:
+
+1. By the `sourceFile` that exports from this tool record for each scene. The
+   viewer ignores this field.
+2. For older or hosted-tool tours, which don't record it, by scene name
+   against the file name without its extension, ignoring case. A scene keeps
+   its file's name unless you rename it, so unrenamed scenes match by
+   themselves.
+3. Scenes still unmatched are listed under **Project**. Use **Choose file…** to
+   pick the panorama for each one. That's needed for scenes renamed before the
+   export.
+
 ### Performance
 
 Measured in Chrome:
@@ -105,7 +124,8 @@ implementation here was written separately to produce the same output:
 
 Differences: there are no `screenfull`/`bowser` dependencies (the viewer uses
 the native Fullscreen API), there is no IE tooltip fallback, there is project
-save/load, and folder export is available.
+save/load (including from an exported tour), folder export is available, and
+each scene in `data.js` has an extra `sourceFile` field.
 
 ## Files
 

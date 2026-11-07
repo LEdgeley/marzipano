@@ -39,9 +39,14 @@
     <div class="row">
       <button id="saveProject" type="button">Save project</button>
       <label class="button" for="projectInput">Load project</label>
-      <input id="projectInput" type="file" accept=".json,application/json" hidden>
+      <input id="projectInput" type="file" accept=".json,.js,.zip,application/json,application/zip" hidden>
     </div>
-    <p class="hint">A project file keeps names, views and hotspots. Load it, then add the same image files again.</p>
+    <p class="hint">A project file keeps names, views and hotspots. Load it, then add the same image files again. You can also load an exported tour: its <code>data.js</code> or the exported ZIP.</p>
+    <div id="pendingScenes" hidden>
+      <p class="hint">Waiting for these scenes. Add their panoramas, or choose a file for a scene whose name no longer matches its file:</p>
+      <ul></ul>
+      <input id="pickInput" type="file" accept="image/*,.tif,.tiff,.exr,.hdr" multiple hidden>
+    </div>
   </section>
 
   <section class="export">
