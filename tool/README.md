@@ -27,7 +27,10 @@ existing build.
      decode it. It reads the file strip by strip, so full-size stitcher output
      such as PTGui's works. Supported: 8/16-bit RGB(A) or greyscale; none,
      PackBits, LZW or Deflate compression; strips or tiles; BigTIFF.
-     Floating-point/HDR (32-bit) TIFF and EXR are not supported.
+     Floating-point (32-bit) TIFF is not supported; use EXR for HDR.
+   - **HDR:** OpenEXR (`.exr`) and Radiance (`.hdr`) panoramas become Ultra HDR
+     tiles that keep their dynamic range. They show in HDR on HDR displays
+     (WebGPU) and with auto exposure on SDR displays. See [HDR.md](HDR.md).
    - JPEG/PNG are decoded by the browser and are limited by its canvas size
      (about 16k × 8k is safe in Chrome). Use TIFF for anything larger.
    - Colour profiles are not converted, so supply sRGB images (PTGui's

@@ -17,8 +17,8 @@
   <section>
     <h2>Panoramas</h2>
     <label class="button primary" for="fileInput">Add panoramas…</label>
-    <input id="fileInput" type="file" accept="image/*,.tif,.tiff" multiple hidden>
-    <p class="hint">Equirectangular (2:1) JPEG, PNG or 8/16-bit TIFF images, or six cube faces named <code>name_f.jpg</code>, <code>_b</code>, <code>_l</code>, <code>_r</code>, <code>_u</code>, <code>_d</code>. You can also drop files anywhere.</p>
+    <input id="fileInput" type="file" accept="image/*,.tif,.tiff,.exr,.hdr" multiple hidden>
+    <p class="hint">Equirectangular (2:1) JPEG, PNG, 8/16-bit TIFF, or HDR (OpenEXR <code>.exr</code>, Radiance <code>.hdr</code>) images, or six cube faces named <code>name_f.jpg</code>, <code>_b</code>, <code>_l</code>, <code>_r</code>, <code>_u</code>, <code>_d</code>. You can also drop files anywhere.</p>
     <ol id="sceneList"></ol>
   </section>
 
@@ -63,12 +63,21 @@
     <button id="setInitialView" type="button">Set initial view</button>
     <button id="addInfo" type="button">+ Info hotspot</button>
     <button id="addLink" type="button">+ Link hotspot</button>
+    <span id="hdrStatus" hidden></span>
   </div>
   <div id="toast" role="status"></div>
 </main>
 
 <div id="dropOverlay">Drop panoramas to add them</div>
 
+<script>
+// Dev aid: ?timerframes drives animation frames from a timer, so rendering and
+// HDR exposure adaptation keep running in hidden or headless browser tabs.
+if (/[?&]timerframes\b/.test(location.search)) {
+  window.requestAnimationFrame = function(cb) { return setTimeout(function() { cb(performance.now()); }, 16); };
+  window.cancelAnimationFrame = function(id) { clearTimeout(id); };
+}
+</script>
 <script src="../build/marzipano.js"></script>
 <script src="js/zip.js"></script>
 <script src="js/app.js"></script>

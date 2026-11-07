@@ -11,7 +11,7 @@
 //      { type: 'progress', done, total, stage }
 //      { type: 'done' } | { type: 'error', message }
 
-importScripts('tiff.js');
+importScripts('tiff.js', 'hdrdecode.js', 'hdrtile.js');
 
 var TILE_SIZE = 512;
 var PREVIEW_SIZE = 256;
@@ -277,8 +277,194 @@ async function run(msg) {
   self.postMessage({ type: 'done' });
 }
 
+// ---- HDR (OpenEXR / Radiance) -> Ultra HDR tiles ---------------------------
+
+var GAIN_QUALITY = 0.95;
+var MIDDLE_GREY = 0.18;
+var HIGHLIGHT_ANCHOR = 1.5;
+var HDR_ENCODE_BATCH = 6;
+
+async function encodeUltraHdr(px, size, params, quality) {
+  var count = size * size;
+  var base = new Uint8ClampedArray(count * 4);
+  var gain = new Uint8ClampedArray(count * 4);
+  HdrTile.splitBaseGain(px, count, params, base, gain);
+  // Two canvases so both encodes run at once.
+  var cb = makeCanvas(size, size), cg = makeCanvas(size, size);
+  cb.ctx.putImageData(new ImageData(base, size, size), 0, 0);
+  cg.ctx.putImageData(new ImageData(gain, size, size), 0, 0);
+  var blobs = await Promise.all([encode(cb.canvas, quality), encode(cg.canvas, GAIN_QUALITY)]);
+  var baseBlob = blobs[0], gainBlob = blobs[1];
+  var bytes = HdrTile.assembleUltraHdr(
+    new Uint8Array(await baseBlob.arrayBuffer()),
+    new Uint8Array(await gainBlob.arrayBuffer()),
+    params);
+  return new Blob([bytes], { type: 'image/jpeg' });
+}
+
+// Like encodeUltraHdr but for a non-square strip (the 256 x 1536 preview).
+async function encodeUltraHdrStrip(px, width, height, params, quality) {
+  var count = width * height;
+  var base = new Uint8ClampedArray(count * 4);
+  var gain = new Uint8ClampedArray(count * 4);
+  HdrTile.splitBaseGain(px, count, params, base, gain);
+  var c = new OffscreenCanvas(width, height);
+  var ctx = c.getContext('2d');
+  ctx.putImageData(new ImageData(base, width, height), 0, 0);
+  var baseBlob = await encode(c, quality);
+  ctx.putImageData(new ImageData(gain, width, height), 0, 0);
+  var gainBlob = await encode(c, GAIN_QUALITY);
+  var bytes = HdrTile.assembleUltraHdr(
+    new Uint8Array(await baseBlob.arrayBuffer()),
+    new Uint8Array(await gainBlob.arrayBuffer()),
+    params);
+  return new Blob([bytes], { type: 'image/jpeg' });
+}
+
+async function runHdr(msg, format) {
+  var quality = typeof msg.quality === 'number' ? msg.quality : 0.85;
+  var file = msg.file;
+  var total = 1, done = 0;
+  function post(stage) {
+    self.postMessage({ type: 'progress', done: done, total: total, stage: stage });
+  }
+
+  // 1. Decode into a packed source, collecting luminance statistics.
+  var builder = null;
+  var decodeFn = format === 'exr' ? HdrDecode.decodeExr : HdrDecode.decodeRadiance;
+  var size = format === 'exr' ? await HdrDecode.readExrSize(file) : null;
+  if (size) {
+    if (Math.abs(size.width - 2 * size.height) > 2) {
+      throw new Error('Equirectangular images must be 2:1, got ' + size.width + 'x' + size.height + '.');
+    }
+    self.postMessage({ type: 'size', width: size.width, height: size.height });
+    builder = new HdrTile.SourceBuilder(size.width, size.height);
+  }
+  var info = await decodeFn(file, function(y, n, rgb) {
+    if (!builder) {
+      var w = rgb.length / n / 3;
+      builder = new HdrTile.SourceBuilder(w, Math.round(w / 2));
+    }
+    if (y + n <= builder.height) { builder.addRows(y, n, rgb); }
+  }, function(fraction) {
+    self.postMessage({ type: 'progress', done: fraction, total: 1, stage: 'decoding HDR' });
+  });
+  if (!size) {
+    if (Math.abs(info.width - 2 * info.height) > 2) {
+      throw new Error('Equirectangular images must be 2:1, got ' + info.width + 'x' + info.height + '.');
+    }
+    self.postMessage({ type: 'size', width: info.width, height: info.height });
+  }
+
+  // 2. Base exposure is anchored on the highlights: the luminance that 99% of
+  //    the sphere lies below (lit surfaces, not light sources) maps to
+  //    HIGHLIGHT_ANCHOR. Anchoring on the average instead makes low-key
+  //    scenes, like a theatre with black drapes, look washed out.
+  var logAverage = builder.logAverage();
+  var p99 = builder.percentile(0.99);
+  var exposure = HIGHLIGHT_ANCHOR / Math.max(p99, 1e-9);
+  // Never brighten the average past middle grey (high-key scenes).
+  exposure = Math.min(exposure, MIDDLE_GREY / Math.max(logAverage, 1e-9));
+  var params = HdrTile.makeParams(builder.maxChannel * exposure);
+  var hdrInfo = {
+    format: 'ultrahdr',
+    gainMapMin: params.gainMapMin,
+    gainMapMax: params.gainMapMax,
+    gamma: params.gamma,
+    offsetSdr: params.offsetSdr,
+    offsetHdr: params.offsetHdr,
+    hdrCapacityMin: params.hdrCapacityMin,
+    hdrCapacityMax: params.hdrCapacityMax,
+    baseRendition: params.baseRendition,
+    baseExposure: exposure,
+    sourceLogAverage: logAverage,
+    sourceP99: p99,
+    sourceMax: builder.maxChannel
+  };
+  self.postMessage({ type: 'hdr', hdr: hdrInfo });
+
+  var faceSize = Math.ceil(builder.width / 4);
+  var levels = computeLevels(faceSize);
+  total = countTiles(levels) + 6;
+  self.postMessage({ type: 'levels', levels: levels, faceSize: faceSize });
+
+  var preview = new Float32Array(PREVIEW_SIZE * PREVIEW_SIZE * 6 * 3);
+  var desc = levels.map(function(l, i) { return { level: l, z: i + 1 }; }).reverse();
+
+  for (var f = 0; f < FACES.length; f++) {
+    var face = FACES[f];
+    post('projecting face ' + face);
+    var facePx = HdrTile.projectFace(builder, face, faceSize, exposure);
+    done++;
+
+    var levelPx = null, levelSize = 0;
+    for (var d = 0; d < desc.length; d++) {
+      var lv = desc[d].level, z = desc[d].z;
+      var S = lv.size, T = lv.tileSize, count = S / T;
+      var upsample = S > faceSize;
+      if (!upsample) {
+        if (!levelPx) {
+          post('resampling face ' + face);
+          levelPx = HdrTile.downsample(facePx, faceSize, S);
+          facePx = null; // largest level that fits is done with the face
+        } else if (levelSize !== S) {
+          levelPx = HdrTile.downsample(levelPx, levelSize, S);
+        }
+        levelSize = S;
+      }
+      // Encode tiles in small batches: JPEG encoding is asynchronous, so the
+      // next tiles are split while earlier ones encode.
+      var pending = [];
+      var flush = async function() {
+        var results = await Promise.all(pending.map(function(p) { return p.promise; }));
+        pending.forEach(function(p, i) {
+          self.postMessage({ type: 'tile', z: p.z, face: face, x: p.x, y: p.y, blob: results[i] });
+          done++;
+        });
+        pending = [];
+        post('tiling face ' + face);
+      };
+      for (var ty = 0; ty < count; ty++) {
+        for (var tx = 0; tx < count; tx++) {
+          var tile = upsample
+            ? HdrTile.upsampleTile(facePx, faceSize, S, T, tx, ty)
+            : HdrTile.cropTile(levelPx, S, T, tx, ty);
+          pending.push({ z: z, x: tx, y: ty, promise: encodeUltraHdr(tile, T, params, quality) });
+          if (pending.length >= HDR_ENCODE_BATCH) { await flush(); }
+        }
+      }
+      if (pending.length) { await flush(); }
+    }
+    // Preview face from the smallest level.
+    var small = levelPx
+      ? HdrTile.downsample(levelPx, levelSize, PREVIEW_SIZE)
+      : HdrTile.downsample(facePx, faceSize, PREVIEW_SIZE);
+    preview.set(small, PREVIEW_FACE_ORDER.indexOf(face) * PREVIEW_SIZE * PREVIEW_SIZE * 3);
+  }
+
+  var previewBlob = await encodeUltraHdrStrip(preview, PREVIEW_SIZE, PREVIEW_SIZE * 6, params, quality);
+  self.postMessage({ type: 'preview', blob: previewBlob });
+  self.postMessage({ type: 'done' });
+}
+
+async function dispatch(msg) {
+  if (msg.kind === 'equirect') {
+    var format = await HdrDecode.sniff(msg.file);
+    if (format) {
+      return runHdr(msg, format);
+    }
+  } else if (msg.kind === 'cube') {
+    for (var key in msg.files) {
+      if (await HdrDecode.sniff(msg.files[key])) {
+        throw new Error('HDR cube faces are not supported yet; use an equirectangular EXR or HDR.');
+      }
+    }
+  }
+  return run(msg);
+}
+
 self.onmessage = function(e) {
-  run(e.data).catch(function(err) {
+  dispatch(e.data).catch(function(err) {
     self.postMessage({ type: 'error', message: (err && err.message) || String(err) });
   });
 };

@@ -151,3 +151,6 @@ body.dragging #dropOverlay { display: flex; }
 .ed-hotspot .panel textarea { min-height: 70px; resize: vertical; }
 .ed-hotspot .panel .row button { padding: 4px 8px; font-size: 12px; }
 .ed-hotspot .danger { color: var(--danger); }
+
+#hdrStatus { align-self: center; font-size: 12px; color: var(--muted); padding: 0 6px; white-space: nowrap; }
+#sceneList .hdr-badge { font-size: 10px; background: #b8860b; color: #fff; border-radius: 3px; padding: 0 4px; margin-left: 4px; }

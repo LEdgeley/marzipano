@@ -17,6 +17,7 @@
 
 var Stage = require('./Stage');
 var HtmlImageLoader = require('../loaders/HtmlImage');
+var UltraHdrLoader = require('../loaders/UltraHdr');
 var browser = require('bowser');
 var inherits = require('../util/inherits');
 var pixelRatio = require('../util/pixelRatio');
@@ -102,6 +103,7 @@ function WebGlStage(opts) {
     opts.generateMipmaps : false;
 
   this._loader = new HtmlImageLoader(this);
+  this._ultraHdrLoader = UltraHdrLoader.isSupported() ? new UltraHdrLoader() : null;
 
   this._domElement = document.createElement('canvas');
 
@@ -175,6 +177,19 @@ WebGlStage.prototype.setSizeForType = function() {
 
 WebGlStage.prototype.loadImage = function(url, rect, done) {
   return this._loader.loadImage(url, rect, done);
+};
+
+
+/**
+ * Loads an Ultra HDR JPEG as an {@link HdrAsset} (or as a plain asset when it
+ * has no gain map). Falls back to {@link WebGlStage#loadImage} when the
+ * browser lacks fetch or createImageBitmap.
+ */
+WebGlStage.prototype.loadUltraHdrImage = function(url, rect, done) {
+  if (!this._ultraHdrLoader) {
+    return this._loader.loadImage(url, rect, done);
+  }
+  return this._ultraHdrLoader.loadImage(url, rect, done);
 };
 
 
@@ -281,6 +296,7 @@ function WebGlTexture(stage, tile, asset) {
   this._stage = stage;
   this._gl = stage._gl;
   this._texture = null;
+  this._gainTexture = null;
   this._timestamp = null;
   this._width = this._height = null;
   this.refresh(tile, asset);
@@ -370,6 +386,28 @@ WebGlTexture.prototype.refresh = function(tile, asset) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+  // Upload the gain map of HDR assets as a single-channel texture. Its values
+  // are data, not colours, so they must not be colour-managed.
+  var gainElement = asset.gainElement ? asset.gainElement() : null;
+  if (gainElement) {
+    if (!this._gainTexture) {
+      this._gainTexture = gl.createTexture();
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this._gainTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, gainElement);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  } else if (this._gainTexture) {
+    gl.deleteTexture(this._gainTexture);
+    this._gainTexture = null;
+  }
+
   // Unbind texture.
   gl.bindTexture(gl.TEXTURE_2D, null);
 
@@ -384,6 +422,9 @@ WebGlTexture.prototype.refresh = function(tile, asset) {
 WebGlTexture.prototype.destroy = function() {
   if (this._texture) {
     this._gl.deleteTexture(this._texture);
+  }
+  if (this._gainTexture) {
+    this._gl.deleteTexture(this._gainTexture);
   }
   clearOwnProperties(this);
 };

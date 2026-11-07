@@ -19,6 +19,7 @@ module.exports = {
 
   // Stages.
   WebGlStage: require('./stages/WebGl'),
+  WebGpuStage: require('./stages/WebGpu'),
 
   // Renderers.
   WebGlCubeRenderer: require('./renderers/WebGlCube'),
@@ -41,6 +42,7 @@ module.exports = {
 
   // Assets.
   StaticAsset: require('./assets/Static'),
+  HdrAsset: require('./assets/Hdr'),
   DynamicAsset: require('./assets/Dynamic'),
 
   // Texture store.
@@ -77,6 +79,11 @@ module.exports = {
   // Miscellaneous functions.
   registerDefaultControls: require('./controls/registerDefaultControls'),
   autorotate: require('./autorotate'),
+
+  // HDR
+  HdrController: require('./HdrController'),
+  UltraHdrLoader: require('./loaders/UltraHdr'),
+  splitUltraHdr: require('./util/ultraHdr'),
 
   // Utility functions.
   util: {

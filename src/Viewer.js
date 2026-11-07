@@ -23,6 +23,7 @@ var Scene = require('./Scene');
 var Timer = require('./Timer');
 
 var WebGlStage = require('./stages/WebGl');
+var WebGpuStage = require('./stages/WebGpu');
 
 var ControlCursor = require('./controls/ControlCursor');
 var HammerGestures = require('./controls/HammerGestures');
@@ -65,7 +66,9 @@ var clearOwnProperties = require('./util/clearOwnProperties');
  * @param {Object} opts.controls Options to be passed to
  *     {@link registerDefaultControls}.
  * @param {Object} opts.stage Options to be passed to the {@link Stage}
- *     constructor.
+ *     constructor. If `opts.stage.device` is a GPUDevice, a
+ *     {@link WebGpuStage} (capable of HDR output) is used instead of the
+ *     default {@link WebGlStage}; see {@link HdrController.createViewer}.
  * @param {Object} opts.cursors Cursor options.
  * @param {Object} opts.cursors.drag Drag cursor options to be passed to the
  *     {@link ControlCursor} constructor.
@@ -79,7 +82,9 @@ function Viewer(domElement, opts) {
   setOverflowHidden(domElement);
 
   // Create stage.
-  this._stage = new WebGlStage(opts.stage);
+  // A WebGPU stage is used when the stage options carry a GPUDevice.
+  this._stage = opts.stage && opts.stage.device ?
+    new WebGpuStage(opts.stage) : new WebGlStage(opts.stage);
 
   // Register the default renderers for the selected stage.
   registerDefaultRenderers(this._stage);

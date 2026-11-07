@@ -42,8 +42,15 @@ var createImageBitmapOpts = {
  *
  * @param {Stage} stage The stage which is going to request images to be loaded.
  */
-function HtmlImageLoader(stage) {
+function HtmlImageLoader(stage, opts) {
   this._stage = stage;
+  // WebGL flips images on upload, except ImageBitmaps, so cropped bitmaps are
+  // flipped here. Stages that use top-down textures pass flipY: false.
+  this._flipY = !(opts && opts.flipY === false);
+  this._bitmapOpts = this._flipY ? createImageBitmapOpts : {
+    imageOrientation: 'none',
+    premultiplyAlpha: 'premultiply'
+  };
 }
 
 /**
@@ -113,7 +120,7 @@ HtmlImageLoader.prototype._handleLoad = function(img, x, y, width, height, done)
     // Prefer to crop using createImageBitmap, which can potentially offload
     // work to another thread and avoid blocking the user interface.
     // Assume that the promise is never rejected.
-    global.createImageBitmap(img, x, y, width, height, createImageBitmapOpts)
+    global.createImageBitmap(img, x, y, width, height, this._bitmapOpts)
       .then(function(bitmap) {
         done(null, new StaticAsset(bitmap));
       });

@@ -18,6 +18,7 @@
 var WebGlCube = require('./WebGlCube');
 var WebGlFlat = require('./WebGlFlat');
 var WebGlEquirect = require('./WebGlEquirect');
+var WebGpuBase = require('./WebGpuBase');
 
 /**
  * Registers all known renderers for the given stage type into that stage.
@@ -27,12 +28,25 @@ var WebGlEquirect = require('./WebGlEquirect');
  * @param {Stage} stage The stage where the renderers are to be registered.
  * @throws An error if the stage type is unknown.
  */
+// Distinct classes so each geometry gets its own renderer instance.
+function WebGpuCube() { WebGpuBase.apply(this, arguments); }
+WebGpuCube.prototype = Object.create(WebGpuBase.prototype);
+WebGpuCube.prototype.constructor = WebGpuCube;
+function WebGpuFlat() { WebGpuBase.apply(this, arguments); }
+WebGpuFlat.prototype = Object.create(WebGpuBase.prototype);
+WebGpuFlat.prototype.constructor = WebGpuFlat;
+
 function registerDefaultRenderers(stage) {
   switch (stage.type) {
     case 'webgl':
       stage.registerRenderer('flat', 'flat', WebGlFlat);
       stage.registerRenderer('cube', 'rectilinear', WebGlCube);
       stage.registerRenderer('equirect', 'rectilinear', WebGlEquirect);
+      break;
+    case 'webgpu':
+      // Equirect geometry is not supported on WebGPU yet.
+      stage.registerRenderer('flat', 'flat', WebGpuFlat);
+      stage.registerRenderer('cube', 'rectilinear', WebGpuCube);
       break;
     default:
       throw new Error('Unknown stage type: ' + stage.type);
